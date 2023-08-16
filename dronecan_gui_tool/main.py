@@ -78,6 +78,7 @@ from .widgets.local_node import AdapterSettingsWidget
 from .widgets.local_node import setup_filtering
 from .widgets.log_message_display import LogMessageDisplayWidget
 from .widgets.bus_monitor import BusMonitorManager
+from .widgets.can_bootloader import CANBootloaderManager
 from .widgets.dynamic_node_id_allocator import DynamicNodeIDAllocatorWidget
 from .widgets.file_server import FileServerWidget
 from .widgets.node_properties import NodePropertiesWindow
@@ -128,6 +129,7 @@ class MainWindow(QMainWindow):
 
         self._plotter_manager = PlotterManager(self._node)
         self._bus_monitor_manager = BusMonitorManager(self._node, iface_name)
+        self._can_bootloader_manager = CANBootloaderManager(self._node, iface_name)
         # Console manager depends on other stuff via context, initialize it last
         self._console_manager = ConsoleManager(self._make_console_context)
 
@@ -175,12 +177,18 @@ class MainWindow(QMainWindow):
         show_can_adapter_controls_action.setStatusTip('Open CAN adapter control panel (if supported by the adapter)')
         show_can_adapter_controls_action.triggered.connect(self._try_spawn_can_adapter_control_panel)
 
+        show_can_bootloader = QAction(get_icon('microchip'), 'CAN Bootloader', self)
+        show_can_bootloader.setShortcut(QKeySequence('Ctrl+Shift+F'))
+        show_can_bootloader.setStatusTip('Open CAN Bootloader window')
+        show_can_bootloader.triggered.connect(self._can_bootloader_manager.spawn_bootloader)
+
         tools_menu = self.menuBar().addMenu('&Tools')
         tools_menu.addAction(show_bus_monitor_action)
         tools_menu.addAction(show_console_action)
         tools_menu.addAction(new_subscriber_action)
         tools_menu.addAction(new_plotter_action)
         tools_menu.addAction(show_can_adapter_controls_action)
+        tools_menu.addAction(show_can_bootloader)
 
         #
         # Panels menu
