@@ -18,6 +18,8 @@ from PyQt5.QtCore import Qt, QTimer, QRegExp
 from logging import getLogger
 from .. import get_app_icon
 
+MANUAL_CAN_DEV = "cansend can0"
+
 CONTROL_MODE_JOG = "Jog"
 CONTROL_MODE_CONTINUAL_SPEEED = "Continual speed"
 CONTROL_MODE_RELATIVE_POSITIONING = "Relative positioning"
@@ -25,11 +27,45 @@ CONTROL_MODE_ABSOLUTE_POSITIONING = "Absolute positioning"
 CONTROL_MODE_SPEED_CYCLING = "Speed cycling"
 CONTROL_MODE_POSITION_CYCLING = "Position cycling"
 
+CONTROL_START_PLUS = "Start+"
+CONTROL_START_MINUS = "Start-"
+CONTROL_STOP = "Stop"
+
+PROTOCOL_TYPE_MAUAL_CAN = "Manual CAN"
+PROTOCOL_TYPE_OVER_CAN_BRIDGE = "Over CAN bridge"
+
 logger = getLogger(__name__)
 
 def get_validator_parameters():
-    regex = QRegExp(r'^\d{1,3}\.\d{3}$')
+    regex = QRegExp(r'^([0-9]{1,10}|429496729[0-5])$')
     return QRegExpValidator(regex)
+
+def get_validator_raw_parameters():
+    regex = QRegExp(r'^\d{1,10}$')
+    return QRegExpValidator(regex)
+
+class CANManualProtocol():
+    CAN_ID_PDO_SPD = "100"
+    CAN_ID_PDO_SPD_REP = "101"
+    CAN_ID_PDO_POS = "110"
+    CAN_ID_PDO_POS_REP = "111"
+    CAN_ID_SDO_REC = "601"
+    CAN_ID_SDO_TRA = "581"
+
+    CAN_ID_ZEROPOS = "102"
+    CAN_IS_CLR_ERR = "103"
+    CAN_ID_CLR_ERR_REP = "104"
+
+    def convert_value(self, number):
+        return f"{(number >> 24) & 0xFF:02X}.{(number >> 16) & 0xFF:02X}.{(number >> 8) & 0xFF:02X}.{number & 0xFF:02X}"
+
+    def getCommStartContinualSpeed(self, inst, speed_axis1, speed_axis2):
+        comm_str = inst + self.CAN_ID_PDO_SPD + "#" + self.convert_value(speed_axis1) + "." + self.convert_value(speed_axis2)
+        return comm_str
+
+    def getCommStop(self, inst):
+        comm_str = inst + self.CAN_ID_PDO_SPD + "#" + self.convert_value(0) + "." + self.convert_value(0)
+        return  comm_str
 
 class TGDrivesControlWindow(QMainWindow):
     DEFAULT_PLOT_X_RANGE = 120
@@ -42,9 +78,12 @@ class TGDrivesControlWindow(QMainWindow):
 
         self.setGeometry(100, 100, 700, 300)
 
+        self._getFrame = get_frame
+
         self.motion_type = CONTROL_MODE_JOG
         self.control_acc_dec = 0.0
-        self.control_speed = 0.0
+        # self.control_speed = 0.0
+        self.control_speed = 0
         self.control_speed2 = 0.0
         self.control_position = 0.0
         self.control_position2 = 0.0
@@ -93,8 +132,19 @@ class TGDrivesControlWindow(QMainWindow):
         control_adv_parameters_layout = QVBoxLayout(control_group_adv_parameters)
         control_group_buttons = QGroupBox("Control")
         control_buttons_layout = QVBoxLayout(control_group_buttons)
-        control_item_motion_type = QHBoxLayout(self)
+        
+        control_item_protocol_type = QHBoxLayout(self)
+        self.control_protocol_type_lable = QLabel("Protocol type:")
+        self.control_protocol_type_dropdown = QComboBox(self)
+        self.control_protocol_type_dropdown.setMaximumWidth(280)
+        self.control_protocol_type_dropdown.addItem(PROTOCOL_TYPE_MAUAL_CAN)
+        self.control_protocol_type_dropdown.addItem(PROTOCOL_TYPE_OVER_CAN_BRIDGE)
+        self.control_protocol_type_dropdown.currentIndexChanged.connect(self.protocol_changed)
+        control_item_protocol_type.addWidget(self.control_protocol_type_lable)
+        control_item_protocol_type.addWidget(self.control_protocol_type_dropdown)
+        control_parameters_layout.addLayout(control_item_protocol_type)
 
+        control_item_motion_type = QHBoxLayout(self)
         self.control_motion_type_lable = QLabel("Motion type:")
         self.control_motion_type_dropdown = QComboBox(self)
         self.control_motion_type_dropdown.setMaximumWidth(280)
@@ -114,6 +164,7 @@ class TGDrivesControlWindow(QMainWindow):
         self.control_acc_dec_lable = QLabel("Acc, Dec:")
         self.control_acc_dec_edit = QLineEdit(self)
         self.control_acc_dec_edit.setValidator(get_validator_parameters())
+        self.control_acc_dec_edit.setText("100.000")
         self.control_acc_dec_edit.setFixedWidth(100)
         self.control_acc_dec_edit.setMaxLength(7)
         self.control_acc_dec_info = QLabel("rev/s^2")
@@ -126,10 +177,14 @@ class TGDrivesControlWindow(QMainWindow):
         control_item_speed = QHBoxLayout(self)
         self.control_speed_lable = QLabel("Speed:")
         self.control_speed_edit = QLineEdit(self)
-        self.control_speed_edit.setValidator(get_validator_parameters())
+        # self.control_speed_edit.setValidator(get_validator_parameters())
+        # self.control_speed_edit.setText("0.500")
+        self.control_speed_edit.setValidator(get_validator_raw_parameters())
+        self.control_speed_edit.setText("17825791")
         self.control_speed_edit.setFixedWidth(100)
         self.control_acc_dec_edit.setMaxLength(7)
-        self.control_speed_info = QLabel("rev/s")
+        # self.control_speed_info = QLabel("rev/s")
+        self.control_speed_info = QLabel("?")
         self.control_speed_info.setMaximumWidth(70)
         control_item_speed.addWidget(self.control_speed_lable)
         control_item_speed.addWidget(self.control_speed_edit)
@@ -269,16 +324,19 @@ class TGDrivesControlWindow(QMainWindow):
     
     def handler_jog(self):
         self.log_text_edit.append(f"Mode jog")
+        self.motion_type = CONTROL_MODE_JOG
         self.hide_control_widgets()
         return
     
     def handler_continual_speed(self):
         self.log_text_edit.append(f"Mode Continual speed")
+        self.motion_type = CONTROL_MODE_CONTINUAL_SPEEED
         self.hide_control_widgets()
         return
     
     def handler_relative_positioning(self):
         self.log_text_edit.append(f"Mode Relative positioning")
+        self.motion_type = CONTROL_MODE_RELATIVE_POSITIONING
         self.hide_control_widgets()
         self.control_position_lable.setVisible(True)
         self.control_position_edit.setVisible(True)
@@ -287,6 +345,7 @@ class TGDrivesControlWindow(QMainWindow):
     
     def handler_absolute_positioning(self):
         self.log_text_edit.append(f"Mode Absolute positioning")
+        self.motion_type = CONTROL_MODE_ABSOLUTE_POSITIONING
         self.hide_control_widgets()
         self.control_position_lable.setVisible(True)
         self.control_position_edit.setVisible(True)
@@ -295,6 +354,7 @@ class TGDrivesControlWindow(QMainWindow):
     
     def handler_speed_cycling(self):
         self.log_text_edit.append(f"Mode Speed cycling")
+        self.motion_type = CONTROL_MODE_SPEED_CYCLING
         self.hide_control_widgets()
         self.control_time_lable.setVisible(True)
         self.control_time_edit.setVisible(True)
@@ -312,6 +372,7 @@ class TGDrivesControlWindow(QMainWindow):
     
     def handler_position_cycling(self):
         self.log_text_edit.append(f"Mode Position cycling")
+        self.motion_type = CONTROL_MODE_POSITION_CYCLING
         self.hide_control_widgets()
         self.control_position_lable.setVisible(True)
         self.control_position_edit.setVisible(True)
@@ -330,7 +391,7 @@ class TGDrivesControlWindow(QMainWindow):
         except ValueError:
             self.log_text_edit.append("Invalid Custom Input value control_acc_dec.")
         try:
-            self.control_speed = float(self.control_speed_edit.text())
+            self.control_speed = int(self.control_speed_edit.text())
         except ValueError:
             self.log_text_edit.append("Invalid Custom Input value control_speed.")
         try:
@@ -367,8 +428,37 @@ class TGDrivesControlWindow(QMainWindow):
         self.log_text_edit.append(f"control_time2 value: {self.control_time2}")
         self.log_text_edit.append(f"control_delay value: {self.control_delay}")
 
+    def send_command(self, control):
+        inst = "cansend can0 "
+        command = ""
+        mode_com = ""
+        speed = self.control_speed
+        protocol = CANManualProtocol()
+
+        if self.motion_type == CONTROL_MODE_CONTINUAL_SPEEED:
+            mode_com = "100"
+        else:
+            self.log_text_edit.append(f"ERROR: Unsupported mode")
+            return
+        if control == CONTROL_START_PLUS:
+            command = protocol.getCommStartContinualSpeed(inst, speed, 0)
+        elif control == CONTROL_START_MINUS:
+            command = protocol.getCommStartContinualSpeed(inst, 0 - speed, 0)
+        elif control == CONTROL_STOP:
+            command = protocol.getCommStop(inst)
+            
+
+        if command != "":
+            os.system(command)
+            self.log_text_edit.append(f"cmd executed Successful: {command}")
+        else:
+            self.log_text_edit.append(f"Error cmd")
+
     def handler_enable_servo(self):
         self.log_text_edit.append(f"Button Enable servo pressed")
+        item = self._getFrame()
+        direction, frame = item
+        print("dir: " + direction + " frame: " + frame)
 
     def handler_disable_servo(self):
         self.log_text_edit.append(f"Button Disable servo pressed")
@@ -376,13 +466,16 @@ class TGDrivesControlWindow(QMainWindow):
     def handler_start_servo_plus(self):
         self.log_text_edit.append(f"Button Start+ pressed")
         self.fill_control_config()
+        self.send_command(CONTROL_START_PLUS)
         
     def handler_start_servo_minus(self):
         self.log_text_edit.append(f"Button Start- pressed")
         self.fill_control_config()
+        self.send_command(CONTROL_START_MINUS)
 
     def handler_stop(self):
         self.log_text_edit.append(f"Button Stop pressed")
+        self.send_command(CONTROL_STOP)
 
     control_modes_map = {
         CONTROL_MODE_JOG: handler_jog,
@@ -399,6 +492,9 @@ class TGDrivesControlWindow(QMainWindow):
         if mode in self.control_modes_map:
             self.control_modes_map[mode](self)
 
+    def protocol_changed(self, index):
+        protocol = self.control_protocol_type_dropdown.currentText()
+        self.log_text_edit.append(f"Protocol changed to: {protocol}")
 
          
 
